@@ -1,0 +1,17 @@
+{
+  "name": "sitevero-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "External scanning worker for SiteVero: consent, GPC, accessibility and AI transparency checks with Playwright.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/index.js",
+    "scan": "node src/cli.js",
+    "test": "node test/e2e.js"
+  },
+  "dependencies": {
+    "@axe-core/playwright": "4.11.0",
+    "playwright": "1.63.0"
+  }
+}
