@@ -20,7 +20,8 @@ const RUN_ONCE = process.env.RUN_ONCE === 'true';
  * of an optional field. Every rejection is logged in full so the contract can be fixed.
  */
 async function completeWithFallback(payload) {
-  const optional = ['trackers', 'coverage', 'ai_systems'];
+  // Drop the least valuable part first: coverage, then the tracker map, then AI systems.
+  const optional = ['coverage', 'trackers', 'ai_systems'];
   let current = { ...payload };
   for (let i = 0; ; i++) {
     try {
@@ -29,7 +30,9 @@ async function completeWithFallback(payload) {
       return;
     } catch (e) {
       const rejected = e.status === 400 || e.status === 422;
-      log('error', 'complete rejected', { scan_id: payload.scan_id, status: e.status, response: String(e.message || e).slice(0, 2000) });
+      log('error', 'complete rejected', { scan_id: payload.scan_id, status: e.status, sent: Object.keys(current).filter((k) => k !== 'scan_id') });
+      // Plain text line so log viewers show the app's full error message without truncating it.
+      console.error(`COMPLETE REJECTED (${e.status}) with fields [${Object.keys(current).join(', ')}]: ${String(e.message || e).slice(0, 2000)}`);
       const next = optional.find((k) => current[k] !== undefined);
       if (!rejected || !next) throw e;
       const { [next]: _drop, ...rest } = current;
