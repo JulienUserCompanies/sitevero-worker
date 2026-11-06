@@ -20,7 +20,7 @@ async function call(body, { retries = 2 } = {}) {
       if (res.ok) return json;
       // 4xx: our payload is wrong or the job is gone; retrying will not help.
       if (res.status >= 400 && res.status < 500) {
-        const err = new Error(`worker API ${body.action} → ${res.status}: ${text.slice(0, 500)}`);
+        const err = new Error(`worker API ${body.action} → ${res.status}: ${text.slice(0, 2000)}`);
         err.status = res.status;
         throw err;
       }

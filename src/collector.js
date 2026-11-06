@@ -96,8 +96,8 @@ export function makeCollector(domain) {
         vendor: vendor.slice(0, 200),
         category,
         resource_type: RESOURCE[topType] || 'other',
-        country,
-        outside_eea: country ? !EEA.has(country) : null,
+        // Unknown vendor: leave country/outside_eea out (the database stores them as null = unknown).
+        ...(country ? { country, outside_eea: !EEA.has(country) } : {}),
         loads_before_consent: e.before,
         loads_after_reject: e.afterReject,
         sets_cookies: Boolean(setsCookies),

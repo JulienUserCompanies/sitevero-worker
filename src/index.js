@@ -14,6 +14,30 @@ const HEARTBEAT_MS = envInt('HEARTBEAT_MS', 60000);
 const SEND_COVERAGE = process.env.SEND_COVERAGE !== 'false'; // the app accepts "coverage" since the Oct 2026 contract update
 const RUN_ONCE = process.env.RUN_ONCE === 'true';
 
+/**
+ * Send results. If the app rejects the payload (HTTP 400/422), retry without the optional parts
+ * (first trackers, then coverage, then ai_systems), so a scan's findings are never lost because
+ * of an optional field. Every rejection is logged in full so the contract can be fixed.
+ */
+async function completeWithFallback(payload) {
+  const optional = ['trackers', 'coverage', 'ai_systems'];
+  let current = { ...payload };
+  for (let i = 0; ; i++) {
+    try {
+      await api.complete(current);
+      if (i > 0) log('warn', 'scan completed after dropping optional fields', { scan_id: payload.scan_id, dropped: optional.filter((k) => payload[k] && !current[k]) });
+      return;
+    } catch (e) {
+      const rejected = e.status === 400 || e.status === 422;
+      log('error', 'complete rejected', { scan_id: payload.scan_id, status: e.status, response: String(e.message || e).slice(0, 2000) });
+      const next = optional.find((k) => current[k] !== undefined);
+      if (!rejected || !next) throw e;
+      const { [next]: _drop, ...rest } = current;
+      current = rest;
+    }
+  }
+}
+
 let stopping = false;
 let active = 0;
 
@@ -30,7 +54,7 @@ async function processScan(scan) {
     if (result.ai_systems.length) payload.ai_systems = result.ai_systems;
     if (result.trackers?.length) payload.trackers = result.trackers;
     if (SEND_COVERAGE) payload.coverage = result.coverage;
-    await api.complete(payload);
+    await completeWithFallback(payload);
     log('info', 'scan complete', { scan_id: scan.id, findings: result.findings.length, ai_systems: result.ai_systems.length, trackers: result.trackers?.length || 0, ms: Date.now() - started, coverage: result.coverage });
   } catch (e) {
     log('error', 'scan failed', { scan_id: scan.id, error: String(e.message || e) });
