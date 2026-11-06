@@ -104,8 +104,17 @@ function summariseCoverage(c, packs, verified, region) {
     not_tested.push({ pack: 'all', item: 'pages beyond the homepage and journeys', reason: 'domain not verified' });
     if (packs.has('ai_transparency')) not_tested.push({ pack: 'ai_transparency', item: 'sending a test chat message', reason: 'domain not verified' });
   }
-  if (!process.env[`PROXY_${region.replace('-', '_')}`]) {
-    not_tested.push({ pack: 'all', item: `visit from an IP address in ${region}`, reason: 'no regional proxy configured; language, time zone and location settings were emulated' });
+  // Where the visit really came from: a regional proxy, or the worker's own hosting location
+  // (set WORKER_LOCATION to the hosting country, e.g. NL for Railway "EU West (Amsterdam)").
+  const EEA = ['AT','BE','BG','HR','CY','CZ','DK','EE','FI','FR','DE','GR','HU','IE','IT','LV','LT','LU','MT','NL','PL','PT','RO','SK','SI','ES','SE','IS','LI','NO'];
+  const where = (process.env.WORKER_LOCATION || '').toUpperCase();
+  const euRegion = region === 'EU-FR' || region === 'DE';
+  if (process.env[`PROXY_${region.replace('-', '_')}`]) {
+    // real regional IP address: nothing to report
+  } else if (euRegion && EEA.includes(where)) {
+    scenarios.push({ pack: 'all', scenario: `visit from an EU IP address (worker hosted in ${where})`, ran: true, note: 'consent tools that geolocate visitors treat this as an EU visit; country-specific behaviour may differ' });
+  } else {
+    not_tested.push({ pack: 'all', item: `visit from an IP address in ${region}`, reason: where ? `worker hosted in ${where}; language, time zone and location settings were emulated` : 'no regional proxy configured; language, time zone and location settings were emulated' });
   }
   return {
     region, verified, duration_ms: c.duration_ms,
