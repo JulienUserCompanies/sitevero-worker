@@ -15,7 +15,7 @@ const VENDOR_HQ = {
   'Google Fonts': 'US', 'Google Hosted Libraries': 'US', 'Google Maps': 'US', 'Google reCAPTCHA': 'US', 'Google': 'US', 'YouTube': 'US',
   'Meta Pixel': 'US', 'Meta': 'US', 'Microsoft Advertising': 'US', 'Microsoft Clarity': 'US',
   'LinkedIn Insight': 'US', 'X (Twitter) Ads': 'US', 'Pinterest Tag': 'US', 'Snap Pixel': 'US', 'Reddit Pixel': 'US',
-  Criteo: 'FR', Xandr: 'US', Taboola: 'US', Outbrain: 'US', 'Amazon Ads': 'US', 'The Trade Desk': 'US', Magnite: 'US', PubMatic: 'US',
+  Criteo: 'FR', 'AdRoll (NextRoll)': 'US', Xandr: 'US', Taboola: 'US', Outbrain: 'US', 'Amazon Ads': 'US', 'The Trade Desk': 'US', Magnite: 'US', PubMatic: 'US',
   'Index Exchange': 'CA', OpenX: 'US', Quantcast: 'US', Comscore: 'US', 'Oracle BlueKai': 'US', 'Adobe Audience Manager': 'US',
   'Adobe Advertising': 'US', 'Adobe Analytics': 'US', LiveRamp: 'US', BidSwitch: 'US', Equativ: 'FR', Awin: 'DE', Impact: 'US',
   Mixpanel: 'US', Amplitude: 'US', Segment: 'US', Heap: 'US', Kameleoon: 'FR', Optimizely: 'US', 'AB Tasty': 'FR',

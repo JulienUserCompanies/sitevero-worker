@@ -61,6 +61,7 @@ export const TRACKERS = {
   'smartadserver.com': { vendor: 'Equativ', category: 'advertising' },
   'teads.tv': { vendor: 'Teads', category: 'advertising' },
   'awin1.com': { vendor: 'Awin', category: 'advertising' },
+  'adroll.com': { vendor: 'AdRoll (NextRoll)', category: 'advertising' },
   'zenaps.com': { vendor: 'Awin', category: 'advertising' },
   'impactradius-event.com': { vendor: 'Impact', category: 'advertising' },
   // Analytics

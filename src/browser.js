@@ -56,6 +56,14 @@ export async function newScenarioContext({ region = 'EU-FR', gpc = false } = {})
     ignoreHTTPSErrors: process.env.SCAN_IGNORE_HTTPS_ERRORS === 'true',
     ...(proxyServer ? { proxy: { server: proxyServer } } : {}),
   });
+  // Some consent tools (e.g. Transcend) render their banner in a CLOSED shadow root, which automated
+  // locators cannot see. Force new shadow roots to open mode: page behaviour is unchanged.
+  await context.addInitScript(() => {
+    const orig = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function (init) {
+      return orig.call(this, { ...(init || {}), mode: 'open' });
+    };
+  });
   if (gpc) {
     await context.addInitScript(() => {
       Object.defineProperty(Navigator.prototype, 'globalPrivacyControl', { get: () => true, configurable: true });

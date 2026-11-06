@@ -1,5 +1,5 @@
 import { newScenarioContext, loadAndSettle, settle, trackingCookies, trackingStorage, screenshot } from '../browser.js';
-import { detectBanner, clickButton, withdrawConsent, keyboardTest } from '../cmp.js';
+import { detectBanner, clickButton, clickThroughBanners, withdrawConsent, keyboardTest } from '../cmp.js';
 import { CONSENT_CATEGORIES } from '../trackers.js';
 import { finding } from '../rules.js';
 import { uniqBy, log } from '../util.js';
@@ -16,6 +16,19 @@ function evidenceRequests(hits) {
     .slice(0, MAX_REQ)
     .map(({ at, host, path, type, vendor, category }) => ({ at, host, path, type, vendor, category }));
 }
+
+/**
+ * Separate "data sent" (pixels, beacons, API calls) from "library downloaded" (script files).
+ * Downloading a vendor's script already tells that vendor the visitor's IP address and the page,
+ * but it is far less serious than sending tracking events or setting tracking cookies.
+ */
+function assess(hits, cookies) {
+  const data = hits.filter((h) => h.type !== 'script' && h.type !== 'asset');
+  const scriptsOnly = hits.length > 0 && data.length === 0 && cookies.length === 0;
+  return { data, scriptsOnly };
+}
+const SCRIPT_NOTE =
+  'Only script files were downloaded from these vendors: no tracking events and no tracking cookies were observed. Downloading them still sends each visitor\'s IP address and the page address to the vendor, which regulators treat as a transfer of personal data needing a legal basis.';
 
 function cmpHint(cmp) {
   switch (cmp) {
@@ -58,17 +71,21 @@ export async function runConsent(ctx) {
 
       if (hits.length || cookies.length) {
         const s = summarise([...hits, ...cookies]);
+        const a = assess(hits, cookies);
         findings.push(
           finding('consent.tracking_before_choice', {
-            title: 'Tracking starts before a consent choice',
+            ...(a.scriptsOnly ? { severity: 'moderate' } : {}),
+            title: a.scriptsOnly ? 'Tracking scripts load before a consent choice' : 'Tracking starts before a consent choice',
             description:
               `Before the visitor made any choice${banner.visible ? ' on the cookie banner' : ' (no cookie banner was found)'}, ` +
               `the page contacted ${s.vendors.length} tracking service${s.vendors.length === 1 ? '' : 's'} (${s.list}). ` +
-              `${hits.length} tracking request${hits.length === 1 ? '' : 's'} and ${cookies.length} tracking cookie${cookies.length === 1 ? '' : 's'} were recorded.`,
+              (a.scriptsOnly
+                ? SCRIPT_NOTE
+                : `${a.data.length} tracking event${a.data.length === 1 ? '' : 's'} were sent and ${cookies.length} tracking cookie${cookies.length === 1 ? '' : 's'} were set.`),
             page_url: ctx.url,
             scenario: `no_interaction: clean browser profile, page loaded, banner not touched (${ctx.region})`,
             screenshot_path: shot,
-            evidence: { banner_state: banner.visible ? `visible, no choice made (${banner.cmp})` : 'no consent banner detected', requests: evidenceRequests(hits), cookies },
+            evidence: { banner_state: banner.visible ? `visible, no choice made (${banner.cmp})` : 'no consent banner detected', data_sent: a.data.length, scripts_only: a.scriptsOnly, requests: evidenceRequests(hits), cookies },
             fix_suggestion: cmpHint(banner.cmp),
           })
         );
@@ -131,8 +148,8 @@ export async function runConsent(ctx) {
         coverage.scenarios.reject_reload = { ran: false, note: banner.visible ? 'banner found but no "Reject" option on the first layer' : 'no consent banner found' };
       } else {
         const beforeKeys = new Set((await trackingCookies(context, CONSENT_CATEGORIES)).map((c) => c.name + '|' + c.domain));
-        const rejectLabel = ((await banner.reject.locator.innerText().catch(() => '')) || 'Reject').trim().slice(0, 40);
-        await clickButton(banner.reject);
+        const clicked = await clickThroughBanners(page, banner.reject, 'reject');
+        const rejectLabel = (clicked[0] || 'Reject').replace(/ \(.*\)$/, '');
         recorder.mark();
         await page.reload({ waitUntil: 'load' });
         await settle(page);
@@ -147,17 +164,21 @@ export async function runConsent(ctx) {
         const cookies = (await trackingCookies(context, CONSENT_CATEGORIES)).filter((c) => !beforeKeys.has(c.name + '|' + c.domain));
         await ctx.observe?.('after_reject', recorder.since(), context);
         const shot = await ctx.saveShot('consent_reject_reload', await screenshot(page));
-        coverage.scenarios.reject_reload = { ran: true, reject_method: banner.reject.method, pages: [ctx.url, ...extra], tracker_requests: hits.length, tracking_cookies: cookies.length };
+        coverage.scenarios.reject_reload = { ran: true, reject_method: banner.reject.method, banners_rejected: clicked, pages: [ctx.url, ...extra], tracker_requests: hits.length, tracking_cookies: cookies.length };
         if (hits.length || cookies.length) {
           const s = summarise([...hits, ...cookies]);
+          const a = assess(hits, cookies);
           findings.push(
             finding('consent.tracking_after_reject', {
-              title: 'Tracking continues after "Reject all"',
-              description: `After the visitor clicked "${rejectLabel}" and the page was reloaded, ${s.vendors.length} tracking service${s.vendors.length === 1 ? '' : 's'} still received data (${s.list}). This is the issue regulators sanction most often.`,
+              ...(a.scriptsOnly ? { severity: 'serious' } : {}),
+              title: a.scriptsOnly ? 'Tracking scripts still load after "Reject all"' : 'Tracking continues after "Reject all"',
+              description: a.scriptsOnly
+                ? `After the visitor clicked "${rejectLabel}" and the page was reloaded, scripts from ${s.vendors.length} tracking service${s.vendors.length === 1 ? '' : 's'} were still downloaded (${s.list}). ${SCRIPT_NOTE}`
+                : `After the visitor clicked "${rejectLabel}" and the page was reloaded, ${s.vendors.length} tracking service${s.vendors.length === 1 ? '' : 's'} still received data (${s.list}). This is the issue regulators sanction most often.`,
               page_url: ctx.url,
               scenario: `reject_reload: clicked Reject, reloaded${extra.length ? `, visited ${extra.length} more page(s)` : ''} (${ctx.region})`,
               screenshot_path: shot,
-              evidence: { banner_state: `rejected via ${banner.reject.method} (${banner.cmp})`, requests: evidenceRequests(hits), cookies },
+              evidence: { banner_state: `rejected: ${clicked.join(' → ')}`, data_sent: a.data.length, scripts_only: a.scriptsOnly, requests: evidenceRequests(hits), cookies },
               fix_suggestion: cmpHint(banner.cmp),
             })
           );
@@ -184,7 +205,7 @@ export async function runConsent(ctx) {
         coverage.scenarios.accept_withdraw = { ran: false, note: 'needs an "Accept" button' };
       } else {
         recorder.mark();
-        await clickButton(banner.accept);
+        await clickThroughBanners(page, banner.accept, 'accept');
         await settle(page);
         const acceptedHits = recorder.trackerHits(CONSENT_CATEGORIES);
         await ctx.observe?.('other', recorder.since(), context); // full inventory after Accept
@@ -203,9 +224,11 @@ export async function runConsent(ctx) {
           coverage.scenarios.accept_withdraw = { ran: true, method: w.method, tracker_requests: hits.length };
           if (hits.length) {
             const s = summarise(hits);
+            const a = assess(hits, []);
             findings.push(
               finding('consent.withdrawal_ignored', {
-                title: 'Tracking continues after consent is withdrawn',
+                ...(a.scriptsOnly ? { severity: 'moderate' } : {}),
+                title: a.scriptsOnly ? 'Tracking scripts still load after consent is withdrawn' : 'Tracking continues after consent is withdrawn',
                 description: `The visitor accepted, then withdrew consent (${w.method}). After reloading, ${s.vendors.length} tracking service${s.vendors.length === 1 ? '' : 's'} still received data (${s.list}). Withdrawing consent must be as easy and as effective as giving it.`,
                 page_url: ctx.url,
                 scenario: `accept_withdraw: accepted, withdrew consent, reloaded (${ctx.region})`,

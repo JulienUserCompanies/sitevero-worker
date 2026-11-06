@@ -18,9 +18,9 @@ const KNOWN = [
 ];
 
 export const ACCEPT_RE =
-  /^\s*(accept( all| all cookies| cookies)?|allow( all)?( cookies)?|agree( and close)?|i agree|i accept|got it|ok(ay)?|tout accepter|accepter( et fermer| tout)?|j'accepte|alle akzeptieren|akzeptieren|alle cookies akzeptieren|zustimmen|aceptar( todo| todas)?|acepto|accetta( tutto| tutti)?|accetto|alles accepteren|accepteren|aceitar( tudo)?|zaakceptuj( wszystko)?)\s*$/i;
+  /^\s*(accept( all| all cookies| cookies)?|allow( all)?( cookies)?|agree( and close)?|i agree|i accept|got it|ok(ay)?|accept (&|and) (close|continue)|agree (&|and) (close|continue|proceed)|tout accepter|accepter( et fermer| et continuer| tout)?|j'accepte( tout)?|alle akzeptieren|akzeptieren|alle cookies akzeptieren|zustimmen|aceptar( todo| todas)?|acepto|accetta( tutto| tutti)?|accetto|alles accepteren|accepteren|aceitar( tudo)?|zaakceptuj( wszystko)?)\s*$/i;
 export const REJECT_RE =
-  /^\s*(reject( all)?( cookies)?|decline( all)?|deny( all)?|refuse( all)?|disagree|only (necessary|essential)( cookies)?|necessary only|essential only|use necessary cookies only|tout refuser|refuser( tout)?|continuer sans accepter|alle ablehnen|ablehnen|nur (notwendige|erforderliche)( cookies)?|rechazar( todo| todas)?|rifiuta( tutto| tutti)?|alles weigeren|weigeren|rejeitar( tudo)?|odrzuć( wszystko)?)\s*$/i;
+  /^\s*(reject( all)?( cookies)?|decline( all)?|deny( all)?|refuse( all)?|disagree|only (necessary|essential)( cookies)?|necessary only|essential only|use necessary cookies only|tout refuser|tout rejeter|rejeter( tout)?|refuser( tout| et fermer)?|continuer sans accepter|alle ablehnen|ablehnen|nur (notwendige|erforderliche)( cookies)?|rechazar( todo| todas)?|rifiuta( tutto| tutti)?|alles weigeren|weigeren|rejeitar( tudo)?|odrzuć( wszystko)?)\s*$/i;
 export const SETTINGS_RE =
   /(cookie (settings|preferences)|privacy (settings|preferences|choices)|manage (cookies|consent|preferences)|your privacy choices|consent preferences|gérer (les )?cookies|paramètres (des )?cookies|préférences (des )?cookies|cookie-einstellungen|datenschutzeinstellungen|configuración de cookies|preferencias de cookies|impostazioni (dei )?cookie|cookie-instellingen)/i;
 
@@ -81,6 +81,28 @@ export async function clickButton(btn) {
 }
 
 /**
+ * Some sites stack banners (e.g. a consent tool plus an ad vendor's own banner). Click `kind`
+ * on the first, then keep going while another banner offers the same choice (max 3).
+ * Returns the labels clicked, in order.
+ */
+export async function clickThroughBanners(page, first, kind) {
+  const clicked = [];
+  let btn = first;
+  for (let i = 0; i < 3 && btn; i++) {
+    const label = ((await btn.locator.innerText().catch(() => '')) || kind).trim().slice(0, 40);
+    try {
+      await clickButton(btn);
+      clicked.push(`${label} (${btn.cmp})`);
+    } catch {
+      break;
+    }
+    await sleep(1000);
+    btn = await findButton(page, kind);
+  }
+  return clicked;
+}
+
+/**
  * Withdraw consent after an earlier "Accept": reopen the preferences UI and reject,
  * or fall back to the consent platform's own JavaScript API.
  * Returns { done: boolean, method: string }.
@@ -112,10 +134,21 @@ export async function withdrawConsent(page) {
         if (w.Cookiebot && typeof w.Cookiebot.withdraw === 'function') { w.Cookiebot.withdraw(); return 'cmp_api: Cookiebot.withdraw()'; }
         if (w.Didomi && typeof w.Didomi.setUserDisagreeToAll === 'function') { w.Didomi.setUserDisagreeToAll(); return 'cmp_api: Didomi.setUserDisagreeToAll()'; }
         if (w.UC_UI && typeof w.UC_UI.denyAllConsents === 'function') { w.UC_UI.denyAllConsents(); return 'cmp_api: UC_UI.denyAllConsents()'; }
+        if (w.transcend && typeof w.transcend.showConsentManager === 'function') { w.transcend.showConsentManager(); return 'open:Transcend'; }
       } catch (e) { return null; }
       return null;
     })
     .catch(() => null);
+  if (viaApi && viaApi.startsWith('open:')) {
+    // The consent tool's own preferences dialog was opened; reject from there like a visitor would.
+    await sleep(2000);
+    const reject = await findButton(page, 'reject');
+    if (reject) {
+      await clickButton(reject);
+      return { done: true, method: `ui: ${viaApi.slice(5)} preferences reopened, then reject` };
+    }
+    return { done: false, method: `${viaApi.slice(5)} preferences opened but no reject option found` };
+  }
   if (viaApi) {
     await sleep(1500);
     return { done: true, method: viaApi };
@@ -134,13 +167,15 @@ export async function keyboardTest(page, banner, maxTabs = 20) {
 
   // Tag the banner root so we can tell whether focus is inside it.
   const info = await btn.locator.evaluate((el) => {
-    let root = el.closest('[role="dialog"],[role="alertdialog"],[aria-modal="true"]');
+    const up = (n) => n.parentElement || (n.parentNode && n.parentNode.host) || null; // crosses shadow roots
+    let root = null;
+    for (let n = el; n && n !== document.body; n = up(n)) {
+      if (n.matches && n.matches('[role="dialog"],[role="alertdialog"],[aria-modal="true"]')) { root = n; break; }
+    }
     if (!root) {
-      let n = el;
-      while (n && n !== document.body) {
+      for (let n = el; n && n !== document.body; n = up(n)) {
         const pos = getComputedStyle(n).position;
         if (pos === 'fixed' || pos === 'sticky') { root = n; break; }
-        n = n.parentElement;
       }
     }
     root = root || el.parentElement;
@@ -160,15 +195,18 @@ export async function keyboardTest(page, banner, maxTabs = 20) {
   for (let i = 1; i <= maxTabs; i++) {
     await page.keyboard.press('Tab');
     const f = await page.evaluate(() => {
-      const a = document.activeElement;
+      let a = document.activeElement;
+      while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement; // focus inside shadow DOM
       if (!a || a === document.body) return { d: 'body', inBanner: false, isBtn: false };
+      const up = (n) => n.parentElement || (n.parentNode && n.parentNode.host) || null;
+      let inside = false;
+      for (let n = a; n; n = up(n)) if (n.hasAttribute && n.hasAttribute('data-sitevero-banner')) { inside = true; break; }
       const d =
         a.tagName.toLowerCase() +
         (a.id ? '#' + a.id : '') +
         (a.getAttribute('aria-label') ? `[aria-label="${a.getAttribute('aria-label').slice(0, 40)}"]` : '') +
         (a.innerText ? ` "${a.innerText.trim().slice(0, 40)}"` : '');
-      const inBanner = Boolean(a.closest('[data-sitevero-banner]'));
-      return { d, inBanner };
+      return { d, inBanner: inside };
     });
     seq.push((f.inBanner ? '[banner] ' : '') + f.d);
     if (f.inBanner && reachedAt === null) reachedAt = i;

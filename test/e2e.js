@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { startFixtures } from './fixture-server.js';
 import { startMockApi } from './mock-api.js';
 import { startTlsFixtures } from './tls-fixture.js';
+import { startTranscendFixture } from './transcend-fixture.js';
 
 const SECRET = 'test-secret';
 const PACKS = ['consent', 'gpc', 'accessibility', 'ai_transparency'];
@@ -14,12 +15,14 @@ const site = (domain, verified) => ({
 const scans = [
   { id: 'scan-bad', org_id: 'o', site_id: 's1', status: 'queued', trigger: 'manual', packs: PACKS, region: 'EU-FR', finding_id: null, site: site('http://localhost:8099', true) },
   { id: 'scan-good', org_id: 'o', site_id: 's2', status: 'queued', trigger: 'manual', packs: PACKS, region: 'EU-FR', finding_id: null, site: site('http://localhost:8100', true) },
+  { id: 'scan-transcend', org_id: 'o', site_id: 's5', status: 'queued', trigger: 'manual', packs: ['consent'], region: 'EU-FR', finding_id: null, site: { ...site('http://localhost:8101', false), packs: ['consent'] } },
   { id: 'scan-sec-bad', org_id: 'o', site_id: 's3', status: 'queued', trigger: 'manual', packs: ['security_hygiene'], region: 'EU-FR', finding_id: null, site: { ...site('https://localhost:8443', false), packs: ['security_hygiene'] } },
   { id: 'scan-sec-good', org_id: 'o', site_id: 's4', status: 'queued', trigger: 'manual', packs: ['security_hygiene'], region: 'EU-FR', finding_id: null, site: { ...site('https://localhost:8444', false), packs: ['security_hygiene'] } },
 ];
 
 const stopFixtures = startFixtures(8099, 8100);
 const stopTls = startTlsFixtures(8443, 8444);
+const stopTranscend = startTranscendFixture(8101);
 const api = startMockApi({ port: 8199, secret: SECRET, scans });
 const worker = spawn(process.execPath, ['src/index.js'], {
   env: { ...process.env, SCAN_IGNORE_HTTPS_ERRORS: 'true', SITEVERO_URL: 'http://localhost:8199', WORKER_SECRET: SECRET, POLL_INTERVAL_MS: '500', SETTLE_MS: '1200', CHAT_WAIT_MS: '3000', MAX_PAGES: '3', WORKER_CONCURRENCY: '2' },
@@ -35,6 +38,7 @@ worker.kill('SIGTERM');
 api.close();
 stopFixtures();
 stopTls();
+stopTranscend();
 
 const ids = (r) => (r.body?.findings || []).map((f) => f.rule_id).sort();
 const bad = results['scan-bad'];
@@ -81,6 +85,20 @@ const te = secBad.body?.findings.find((f) => f.rule_id === 'security.tls_expirin
 check(te && te.evidence.days_remaining <= 10 && te.evidence.days_remaining >= 8, `certificate expiry detected (${te?.evidence.days_remaining} days remaining)`);
 const tw = secBad.body?.findings.find((f) => f.rule_id === 'security.tls_weak');
 check(tw && tw.evidence.protocols_accepted.join() === 'TLS 1.0,TLS 1.1', `old TLS versions detected (${tw?.evidence.protocols_accepted})`);
+// Transcend-style site (closed shadow DOM banner, French wording, stacked AdRoll banner)
+const tc = results['scan-transcend'];
+const tcScen = tc.body?.coverage?.details?.consent?.scenarios || {};
+console.log('\nTRANSCEND findings:', JSON.stringify((tc.body?.findings || []).map((f) => [f.rule_id, f.severity, f.title])));
+console.log('TRANSCEND reject:', JSON.stringify(tcScen.reject_reload), '| withdraw:', JSON.stringify(tcScen.accept_withdraw));
+check(tcScen.no_interaction?.banner?.visible === true, 'closed-shadow French banner detected');
+check(tcScen.reject_reload?.ran === true && (tcScen.reject_reload.banners_rejected || []).length === 2, 'both stacked banners rejected (consent tool + ad vendor)');
+const ar = tc.body?.findings.find((f) => f.rule_id === 'consent.tracking_after_reject');
+check(ar && ar.severity === 'serious' && ar.evidence.scripts_only === true, 'after rejecting both banners: only script downloads remain, reported as serious "scripts still load", not as data tracking');
+const wd = tc.body?.findings.find((f) => f.rule_id === 'consent.withdrawal_ignored');
+check(tcScen.accept_withdraw?.ran === true && /Transcend preferences reopened/.test(tcScen.accept_withdraw.method) && wd && wd.evidence.requests.some((r) => r.host === 'd.adroll.com'), 'withdrawal via the consent tool runs, and the ad vendor that kept its own consent is caught');
+const tb2 = tc.body?.findings.find((f) => f.rule_id === 'consent.tracking_before_choice');
+check(tb2 && tb2.severity === 'moderate' && /script/i.test(tb2.title), 'script-only preload reported as moderate "scripts load before consent", not critical');
+check(!ids(tc).includes('consent.banner-focus'), 'keyboard reaches the banner inside the shadow DOM');
 console.log('Tracker example:', JSON.stringify(ga));
 
 console.log('\nCoverage summary (good site):', JSON.stringify({ pages: good.body?.coverage?.pages, scenarios: good.body?.coverage?.scenarios?.length, not_tested: good.body?.coverage?.not_tested }, null, 1));
